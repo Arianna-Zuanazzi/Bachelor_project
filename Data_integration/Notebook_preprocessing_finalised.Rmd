@@ -1,0 +1,568 @@
+---
+title: "Preprocessing_integration_datasets"
+author: "Arianna Zuanazzi"
+date: "2023-05-05"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+###Loading of required libraries 
+
+library(Seurat)
+library(SeuratData)
+library(SeuratDisk)
+library(SeuratWrappers)
+library(ggplot2)
+library(tidyr)
+library(tidyverse)
+library(dplyr)
+library(patchwork)
+library(RColorBrewer)
+library(MetBrewer)
+library(rhdf5)
+library(data.table)
+library(readr)
+library(harmony)
+library(readxl)
+
+```
+
+```{r}
+### DATA LOADING 
+
+dir_name <- "C:\\Users\\39320\\Documents\\Internship\\Finalised_files"
+files <- list.files(dir_name)
+for(file in files){
+  filename <- sub("\\..*", "", file)
+  file <- LoadH5Seurat(paste(dir_name, file, sep = '\\'))
+  assign(filename, file)
+}
+
+
+```
+
+```{r}
+### Preprocessing of datasets
+
+dir <- "C:/Users/39320/Documents/Internship"
+setwd(dir)
+excel <- "Celltype_labels.xlsx"
+labels_mtx <- as.matrix(read_excel(paste(dir, "Celltype_labels.xlsx", sep = '/')))
+rownames(labels_mtx) <- labels_mtx[, "celltype_major"]
+
+grouped.labels <- function(label, res = "fine"){
+  
+  if (is.null(label) || length(label) != 1L || !is.character(label)) {
+    stop("'label' argument must be a character of length 1")
+  }
+  if (is.null(res) || length(res) != 1L || !res %in% c("fine", "coarse")) {
+    stop("'res' argument must be one of: 'fine','coarse'")
+  }
+  if(res == "fine"){
+    if(label %in% labels_mtx[,"celltype_major"]){label.fine <- labels_mtx[label,"Cell_ID_grouped"]} 
+    else{label.fine <- label}
+    new.labels <- label.fine
+  }
+  if(res == "coarse"){
+    if(label %in% labels_mtx[,"celltype_major"]){label.coarse <- labels_mtx[label,"Cell_ID_grouped"]} 
+    else{label.coarse <- label}
+    new.labels <- label.coarse
+  }
+  return(new.labels)
+  
+}
+
+normalise_labels_celltype <- function(seurat, excel = "Celltype_labels.xlsx", original_label = 'celltype_major'){
+  
+  # FUNCTION
+  # The function normalises the celltypes, removing synonyms and returning a Seurat object
+  
+  # INPUTS
+  # seurat <- a Seurat object
+  # excel <- the excell file containing the synonyms
+  # original_label <- a string with the colname in the metadata that needs to be standardised
+  
+  
+  labels_mtx <- as.matrix(read_excel(excel))
+  rownames(labels_mtx) <- labels_mtx[, original_label]
+  
+  
+  Cell_ID_grouped <- as.data.frame(lapply(unlist(seurat[[original_label]]), grouped.labels))
+  Cell_ID_grouped <- t(Cell_ID_grouped)
+  seurat@meta.data$Cell_ID_grouped <- Cell_ID_grouped[,1]
+  
+  Cell_ID_coarse <- as.data.frame(lapply(unlist(seurat[[original_label]]), grouped.labels, res = "coarse"))
+  Cell_ID_coarse <- t(Cell_ID_coarse)
+  seurat@meta.data$Cell_ID_coarse <- Cell_ID_coarse[,1]
+  seurat$Cell_ID_coarse <- NULL
+  seurat[[original_label]] <- seurat$Cell_ID_grouped
+  seurat$Cell_ID_grouped <- NULL
+  return(seurat)
+}
+
+preprocessing <- function(seurat, n_dimensions = 40){
+  
+  # FUNCTION
+  # The function performs a full preprocessing on a dataset, returning a Seurat Object
+  
+  # INPUTS
+  # seurat <- a seurat object
+  # n_dimensions <- number of PC to be used 
+  
+  # processing
+  seurat <- NormalizeData(seurat)
+  seurat <- FindVariableFeatures(seurat)
+  seurat <- ScaleData(seurat)
+  seurat <- RunPCA(seurat)
+  seurat <- RunUMAP(seurat, dims = 1:n_dimensions, reduction = 'pca')
+  seurat <- RunTSNE(seurat)
+  seurat <- FindNeighbors(seurat, dims = 1:n_dimensions)
+  seurat <- FindClusters(seurat, resolution = 0.5)
+  s.genes <- cc.genes$s.genes # genes for S phase evaluation
+  g2m.genes <- cc.genes$g2m.genes # genes for G2M evaluation 
+  seurat <- CellCycleScoring(seurat, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+  seurat <- normalise_labels_celltype(seurat)
+  
+  return(seurat)
+}
+
+visualisation_plots <- function(seurat, numeric_labels = c('nCount_RNA', 'nFeature_RNA', 'mito.percent', 'ribo.percent'), celltype = 'celltype_major', dataset = 'Dataset', sample = 'orig.ident', author = 'authors'){
+  
+  # FUNCTION
+  # The function inputs a series of variables and returns as a list 
+  # a full set of visualisations relevant to scRNA-seq analytics and to dataset visualisation. 
+  # INPUTS
+  # seurat <- a Seurat object
+  # numeric_labels <- a vector of strings
+          # they should be colnames in the metadata containing numeric values
+  # celltype <- a string containing the name of the celltype column in the metadata
+  # dataset <- a string containing the name of the dataset column in the metadata
+  # sample <- a string containing the name of the sample column in the metadata
+  # author <- a string containing the name of the author column in the metadata
+  
+  
+  # Initialising plot list
+  plots <- list()
+  
+  # Violin Plots
+  vln_plot <- VlnPlot(seurat, features = numeric_labels, pt.size = 0, ncol = 2, split.by = author)
+  print(vln_plot)
+  plots[['Violin_plots']] <- vln_plot
+  
+  # Feature Scatter Plots
+  features_scatters <- list()
+  for(i in 2:length(numeric_labels)){
+    feature_scatter <- FeatureScatter(seurat, numeric_labels[1], numeric_labels[i], 
+               group.by = author, pt.size = 0)
+    print(feature_scatter)
+    name <- paste('Feature_scatter', numeric_labels[1], numeric_labels[i], sep = '_')
+    features_scatters[[name]] <- feature_scatter
+  }
+  plots[['Feature_scatters']] <- features_scatters
+  
+  # Dimensional Reduction Plots
+  dimplots <- list()
+  for(label in c(celltype, sample, author)){
+    name <- paste('DimPlot', label, sep = '_')
+    plot <- DimPlot(seurat, reduction = 'umap', group.by = label, label = TRUE, label.size = 4, repel = TRUE)
+    print(plot)
+    dimplots[[name]] <- plot
+  }
+  plots[['DimPlots']] <- dimplots
+  
+  # Celltype Amount Barplot 
+  celltypes <- as.data.frame(table(seurat@meta.data[, c(celltype, author)]))
+  celltype_amount <- ggplot(celltypes, aes(x=celltypes[ ,celltype], y= Freq, fill = celltypes[ , author])) +
+    geom_bar(stat = "identity") + RotatedAxis() +
+    xlab("Celltype") + ylab("Counts") +
+    scale_fill_discrete(name = author)
+  print(celltype_amount)
+  plots[['Celltype_barplot']] <- celltype_amount
+  
+  # Variable Features Plot 
+  top10 <- head(VariableFeatures(seurat), 10)
+  plot1 <- VariableFeaturePlot(seurat)
+  plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+  print(plot1 + plot2)
+  plots[['Variable_features_points']] <- plot1 + plot2
+
+  # Highly Variable Genes Plot
+  HVGs_plot <- DotPlot(seurat, features = VariableFeatures(seurat)[1:10], group.by = 'celltype_major')
+  print(HVGs_plot)
+  plots[['DotPlot_HVG']] <- HVGs_plot
+  
+  # Cell Phase Barplot
+  values <- table(seurat[['Phase']])
+  bar_cellphases <- barplot(values, col = c("red", "green", "blue"))
+  print(bar_cellphases)
+  plots[['Barplot_cellphases']] <- bar_cellphases
+  
+  # HeatMap
+  heat_map <- DimHeatmap(seurat, dims = 1, cells = 500, balanced = TRUE)
+  print(heat_map)
+  plots[['HeatMap']] <- heat_map
+  
+  
+  return(plots)
+}
+
+```
+
+```{r}
+
+### Dataset GEO_GSE176078
+
+# Loading file
+cts <- ReadMtx(mtx = 'C:/Users/39320/Documents/Internship/Datasets/A_single-cell_and_spatially_resolved_atlas_of_human_breast_cancers/matrix.mtx.gz', 
+               cells = 'C:/Users/39320/Documents/Internship/Datasets/A_single-cell_and_spatially_resolved_atlas_of_human_breast_cancers/barcodes.tsv.gz', 
+               features = 'C:/Users/39320/Documents/Internship/Datasets/A_single-cell_and_spatially_resolved_atlas_of_human_breast_cancers/features.tsv.gz')
+
+# Creating Seurat Object
+GEO_GSE176078 <- CreateSeuratObject(counts = cts, min.features = 200, min.cells = 3)
+rm(cts)
+
+# Preprocessing & standardising data
+GEO_GSE176078$sample <- rownames(GEO_GSE176078@meta.data)
+GEO_GSE176078@meta.data <- separate(GEO_GSE176078@meta.data, col = "sample", into = c("Patient", "Barcode"), sep = "_")
+GEO_GSE176078$Dataset <- "GEO_GSE176078" 
+GEO_GSE176078$Patient <- NULL
+GEO_GSE176078$seq_type <- '10x Chromium'
+GEO_GSE176078$authors_extended <- 'Wu, S.Z., Al-Eryani, G., Roden, D.L. et al'
+GEO_GSE176078$authors <- "Wu, S.Z. at al"
+GEO_GSE176078$seq_tech <- "Illumina NextSeq 500"
+
+# Preprocessing & standardising metadata
+GEO_GSE176078_metadata <- read.csv('C:/Users/39320/Documents/Internship/Datasets/A_single-cell_and_spatially_resolved_atlas_of_human_breast_cancers/Whole_miniatlas_meta.csv')
+GEO_GSE176078_metadata = GEO_GSE176078_metadata[-1,]
+GEO_GSE176078_metadata <- separate(GEO_GSE176078_metadata, col = "NAME", int = c("orig.ident", "Barcode"), sep = "_")
+GEO_GSE176078_metadata$Patient <- NULL
+rownames(GEO_GSE176078_metadata) <- paste(GEO_GSE176078_metadata$orig.ident, 
+                                          GEO_GSE176078_metadata$Barcode, sep = '_')
+GEO_GSE176078 <- AddMetaData(GEO_GSE176078, GEO_GSE176078_metadata)
+rm(GEO_GSE176078_metadata)
+
+# Adding numerical features
+GEO_GSE176078$mito.percent <- PercentageFeatureSet(GEO_GSE176078, pattern = '^MT-')
+GEO_GSE176078$nCount_RNA <- as.numeric(GEO_GSE176078$nCount_RNA) 
+GEO_GSE176078$nFeature_RNA <- as.numeric(GEO_GSE176078$nFeature_RNA) 
+GEO_GSE176078$ribo.percent <-PercentageFeatureSet(GEO_GSE176078, pattern = "^RP[SL]")
+
+# Setting Idents
+Idents(GEO_GSE176078) <- "SP_GSE176078"
+
+```
+
+
+```{r}
+
+### Dataset GEO GSE140819
+
+# Data loading
+dir <- "C:/Users/39320/Documents/Internship/Datasets/GEO_GSE140819/BreastCancer"
+files_matrices <- list.files(path = paste(dir, 'Matrices', sep = '/'), recursive = F, full.names = F )
+files_metadata <- list.files(path = paste(dir, 'Metadata', sep = '/'), recursive = F, full.names = F )
+dataset_name <- "GEO_GSE140819"
+
+# Data processing
+ProcessDataGEO <- function(dir, meta, h5, dataset = 'Unknown'){
+  
+  Arianna_cnts <- Read10X_h5(paste(dir, 'Matrices', h5, sep = '/'))
+  Arianna_meta <- read.csv(paste(dir, 'Metadata', meta, sep = '/'))
+  head(Arianna_meta)
+  Arianna_meta$sample <- Arianna_meta$X
+  
+  # Spliting samples columns
+  Arianna_meta <- separate(Arianna_meta, col = "sample", 
+                           into = c("a", "b","c","d", "Barcode"),
+                           sep = "-")
+  Arianna_meta$a <- NULL
+  Arianna_meta$b <- NULL
+  Arianna_meta$c <- NULL
+  Arianna_meta$d <- NULL
+  Arianna_meta$X <- NULL
+  
+  # Handling rownames 
+  rownames(Arianna_meta) <- paste(Arianna_meta$Barcode, "-1", sep = "")
+  Arianna_cnts <- Arianna_cnts[, colnames(Arianna_cnts) %in% rownames(Arianna_meta)]
+  Arianna_test <- CreateSeuratObject(counts = Arianna_cnts, min.cells = 3, min.features = 200)
+  Arianna_test@meta.data
+  
+  # Adding metadata
+  Arianna_test <- AddMetaData(Arianna_test, Arianna_meta)
+  Arianna_test$mitoPercent <- PercentageFeatureSet(Arianna_test, pattern = "^MT-")
+  Arianna_test$orig.ident <- gsub("_.*", "", h5) 
+  Arianna_test$Dataset <- dataset
+  Arianna_test$seq_tech <- "HiSeq X Ten"
+  return(Arianna_test)
+}
+
+# Creating and merging files
+GEO_GSE140819 <- ProcessDataGEO(dir, files_metadata[1], files_matrices[1], dataset_name)
+View(GEO_GSE140819@meta.data)
+
+files <- c()
+for (i in 2:length(files_matrices)){
+  data <- ProcessDataGEO(dir, files_metadata[i], files_matrices[i], dataset_name)
+  files <- append(files, data)
+}
+GEO_GSE140819 <- merge(GEO_GSE140819, files)
+rm(i, files, data)
+
+# Renaming colnames to fit standard
+GEO_GSE140819$mito.percent <- GEO_GSE140819$mitoPercent
+GEO_GSE140819$celltype_major <- GEO_GSE140819$annotate
+GEO_GSE140819$authors_extended <- 'Slyper, M., Porter, C.B.M., Ashenberg, O. et al.'
+GEO_GSE140819$authors <- 'Slyper, M. at al.'
+GEO_GSE140819$seq_type <- '10x Chromium'
+GEO_GSE140819$mitoPercent <- NULL
+GEO_GSE140819$annotate <- NULL
+GEO_GSE140819$percent_mito <- NULL
+GEO_GSE140819$ribo.percent <- PercentageFeatureSet(GEO_GSE140819, pattern = "^RP[SL]")
+
+# Setting idents
+Idents(GEO_GSE140819) <- 'SP_GSE140819'
+
+```
+
+
+```{r}
+### SINGLE AND MERGED VISUALISATION
+
+setwd("C:\\Users\\39320\\Documents\\Internship")
+
+# Processing datasets
+n_dims <- 40
+processed_GEO_GSE140819 <- preprocessing(GEO_GSE140819, n_dimensions = n_dims)
+processed_GEO_GSE176078 <- preprocessing(GEO_GSE176078, n_dimensions = n_dims)
+
+# Visualisation
+numeric_labels <- c('nCount_RNA', 'nFeature_RNA', 'mito.percent', 'ribo.percent')
+celltype <- 'celltype_major'
+dataset <- 'Dataset'
+sample <- 'orig.ident'
+author <- 'authors'
+visualisations_processed_GSE140819 <- visualisation_plots(processed_GEO_GSE140819, numeric_labels = numeric_labels, celltype = celltype, sample = sample, author = author)
+visualisations_processed_GSE176078 <- visualisation_plots(processed_GEO_GSE176078, numeric_labels = numeric_labels, celltype = celltype, sample = sample, author = author)
+
+# Filtering 
+n_count <- 2500
+n_feature <- 400
+mito <- 5
+filtered_processed_GSE140819 <- subset(processed_GEO_GSE140819, nCount_RNA < n_count & nFeature_RNA > n_feature & mito.percent < mito)
+
+# Resetting idents
+Idents(filtered_processed_GSE140819) <- 'SP_fp_GSE140819'
+filtered_processed_GSE176078 <- subset(processed_GEO_GSE176078, nCount_RNA < n_count & nFeature_RNA > n_feature & mito.percent < mito)
+Idents(filtered_processed_GSE176078) <- 'SP_fp_GSE176078'
+
+# Filtered visualisation
+visualisations_filtered_GSE140819 <- visualisation_plots(filtered_processed_GSE140819, numeric_labels = numeric_labels, celltype = celltype, sample = sample, author = author)
+visualisations_filtered_GSE176078 <- visualisation_plots(filtered_processed_GSE176078, numeric_labels = numeric_labels, celltype = celltype, sample = sample, author = author)
+
+# Merging and visualising the dataset 
+merged_dataset <- merge(filtered_processed_GSE140819, filtered_processed_GSE176078)
+merged_dataset@meta.data <- merged_dataset@meta.data[, intersect(colnames(filtered_processed_GSE140819@meta.data), colnames(filtered_processed_GSE176078@meta.data))]
+
+# Processing & visualising final processed dataset
+processed_merged_dataset <- preprocessing(merged_dataset, n_dimensions = n_dims)
+Idents(processed_merged_dataset) <- 'SP_processed_merged'
+visualisations_merged_dataset <- visualisation_plots(processed_merged_dataset,  numeric_labels = numeric_labels, celltype = celltype, sample = sample, author = author)
+
+```
+
+
+
+```{r}
+### RPCA integration
+
+rpca_integration <- function(seurat, n_dims = 40, split_label = 'authors', k_anchors = 20){
+  
+  # FUNCTION
+  # The function performs Reciprocal Principal Component Analysis integration. 
+  # It outputs an integrated, processed seurat object
+  
+  # INPUT
+  # seurat <- seurat object, possibly a preprocessed and merged one
+  # n_dims <- number of PC to be used in integration, should be an integer
+  # split_label <- colname to be used to split the object.
+          # Should be a string with the name of a column in the metadata
+  # k_anchors <- number of anchors to be used in the process
+  
+  
+  # Splitting Seurat object
+  obj.list <- SplitObject(seurat, split.by = split_label)
+  
+  # Selecting features & anchors, integrating
+  features <- SelectIntegrationFeatures(object.list = obj.list)
+  anchors <- FindIntegrationAnchors(object.list = obj.list, anchor.features = features, reduction = "rpca", k.anchor = k_anchors)
+  rpca_integrated <- IntegrateData(anchorset = anchors)
+  
+  # Processing 
+  rpca_integrated <- ScaleData(rpca_integrated)
+  rpca_integrated <- RunPCA(rpca_integrated)
+  rpca_integrated <- RunUMAP(rpca_integrated, reduction = "pca", dims = 1:n_dims)
+  rpca_integrated <- RunTSNE(rpca_integrated)
+  rpca_integrated <- FindNeighbors(rpca_integrated, reduction = "pca", dims = 1:n_dims)
+  rpca_integrated <- FindClusters(rpca_integrated, resolution = 0.5)
+  
+  # Setting default assay & idents
+  DefaultAssay(rpca_integrated) <- 'integrated'
+  Idents(rpca_integrated) <- 'SP_RPCA'
+
+  return(rpca_integrated)
+}
+
+rpca_integrated <- rpca_integration(processed_merged_dataset)
+visualisations_rpca <- visualisation_plots(rpca_integrated)
+```
+
+
+
+```{r}
+
+# FastMNN integration 
+
+fastmnn_integration <- function(seurat, n_dims = 40, split_label = 'authors'){
+  
+  # FUNCTION
+  # It performs Fast Mutual Nearest Neighbours correction & integration. 
+  # It outputs an integrated, processed Seurat object
+  
+  # INPUT
+  # seurat <- seurat object, possibly a preprocessed and merged one
+  # n_dims <- number of PC to be used in integration, should be an integer
+  # split_label <- colname to be used to split the object.
+          # Should be a string with the name of a column in the metadata
+  
+  
+  # Preprocessing & integration
+  seurat <- NormalizeData(seurat)
+  merged_seurat <- FindVariableFeatures(seurat)
+  seurat <- RunFastMNN(object.list = SplitObject(merged_seurat, 
+                                                         split.by = split_label))
+  
+  # Processing
+  fastmnn_seurat <- FindVariableFeatures(fastmnn_seurat)
+  fastmnn_seurat <- ScaleData(fastmnn_seurat)
+  fastmnn_seurat <- RunPCA(fastmnn_seurat)
+  fastmnn_seurat <- RunUMAP(fastmnn_seurat, reduction = "mnn", dims = 1:n_dims)
+  fastmnn_seurat <- RunTSNE(fastmnn_seurat)
+  fastmnn_seurat <- FindNeighbors(fastmnn_seurat, reduction = "mnn", dims = 1:n_dims)
+  fastmnn_seurat <- FindClusters(fastmnn_seurat)
+  
+  # Setting default assay & idents
+  DefaultAssay(fastmnn_seurat) <- 'mnn.reconstructed'
+  Idents(fastmnn_seurat) <- 'SP_FastMNN'
+  
+  return(fastmnn_seurat)
+  
+}
+
+# merging datasets & integration
+merged <- merge(filtered_processed_GSE140819, filtered_processed_GSE176078)
+na_cols <- which(apply(is.na(merged@meta.data), 2, any))
+merged@meta.data <- merged@meta.data[, -na_cols]
+Idents(merged_seurat) <- 'SP_merged'
+fastmnn_integrated <- fastmnn_integration(merged)
+visualisations_fastmnn <- visualisation_plots(fastmnn_integrated)
+```
+
+
+```{r}
+# HARMONY INTEGRATION
+
+harmony_integration <- function(merged_processed_seurat, n_dims = 40, group_label = 'authors'){
+  
+  # FUNCTION
+  # It performs Harmony integration, outputting a processed, integrate Seurat Object. 
+  
+  # INPUT
+  # seurat <- seurat object, possibly a preprocessed and merged one
+  # n_dims <- number of PC to be used in integration, should be an integer
+  # group_label <- colname to be used to group the object.
+          # Should be a string with the name of a column in the metadata
+    
+  
+  # Integrations
+  dataset.harmony <- merged_processed_seurat %>%
+    RunHarmony(group.by.vars = group_label, plot_convergence = FALSE)
+  
+  # Finding & setting embeddings 
+  dataset.harmony@reductions
+  dataset.harmony.embed <- Embeddings(dataset.harmony, "harmony")
+  dataset.harmony.embed[1:10,1:10]
+  
+  # Do UMAP and clustering using ** Harmony embeddings instead of PCA **
+  dataset.harmony <- dataset.harmony %>%
+    RunUMAP(reduction = 'harmony', dims = 1:n_dims) %>%
+    FindNeighbors(reduction = "harmony", dims = 1:n_dims) %>%
+    FindClusters(resolution = 0.1)
+  
+  # Processing
+  dataset.harmony <- NormalizeData(dataset.harmony)
+  dataset.harmony <- FindVariableFeatures(dataset.harmony)
+  dataset.harmony <- RunPCA(dataset.harmony)
+  dataset.harmony <- RunTSNE(fataset.harmony)
+  
+  # Setting default idents
+  Idents(dataset.harmony) <- "SP_Harmony"
+  
+  return(dataset.harmony)
+}
+
+harmony_integrated <- harmony_integration(processed_merged_dataset)
+harmony_visualisations <- visualisation_plots(harmony_integrated)
+
+```
+
+
+
+```{r}
+# LIGER INTEGRATION
+
+liger_integration <- function(merged_processed_seurat, split_label = 'authors', n_dims = 40){
+
+  
+  # FUNCTION
+  # It performs Liger integration, outputting an integrated, processed Seurat object.
+  
+  # INPUT
+  # seurat <- seurat object, possibly a preprocessed and merged one
+  # n_dims <- number of PC to be used in integration, should be an integer
+  # split_label <- colname to be used to split the object.
+          # Should be a string with the name of a column in the metadata
+  
+  
+  # Preprocessing 
+  pbmc_liger <- NormalizeData(merged_processed_seurat)
+  pbmc_liger <- FindVariableFeatures(pbmc_liger)
+  pbmc_liger <- ScaleData(pbmc_liger, split.by = split_label, do.center = F)
+  
+  # Running integration-specific steps
+  pbmc_liger <- RunOptimizeALS(pbmc_liger, k = 30, lambda = 5, split.by = split_label)
+  pbmc_liger <- RunQuantileNorm(pbmc_liger, split.by = split_label)
+  
+  # Processing
+  pbmc_liger <- FindNeighbors(pbmc_liger,reduction = "iNMF", k.param = 10,dims = 1:n_dims)
+  pbmc_liger <- FindClusters(pbmc_liger)
+  pbmc_liger <- RunUMAP(pbmc_liger, dims = 1:n_dims, reduction = "iNMF", verbose = F)
+  pbmc_liger <- RunPCA(pbmc_liger)
+  pbmc_liger <- RunTSNE(pbmc_liger)
+  
+  # Setting default idents
+  Idents(pbmc_liger) <- "SP_Liger"
+  
+  return(pbmc_liger)
+}
+
+liger_integrated <- liger_integration(processed_merged_dataset)
+liger_visualisations <- visualisation_plots(liger_integrated)
+```
+
