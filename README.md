@@ -1,4 +1,4 @@
-##Bachelor Project: Comparison of single cell RNA sequencing data integration methods with application to breast cancer data
+#Bachelor Project: Comparison of single cell RNA sequencing data integration methods with application to breast cancer data
 
 This repository contains the code for my Bachelor thesis project, developed in R using the Seurat toolkit. The project compares four different data integration methodologies using gene expression profiles from various breast cancer samples.
 
