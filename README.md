@@ -6,6 +6,13 @@ This repository contains the code for my Bachelor thesis project, developed in R
 
 The goal of this project is to objectively evaluate the qualitative aspects of different data integration methods. I use a panel of statistical and computational metrics to analyze gene expression profiles from breast cancer samples that vary in severity and metastasis. Additionally, I have developed a function to benchmark these integration procedures and provide insightful visualizations.
 
+## System and RStudio
+For my project I used the following version of RStudio, platform and operating system, with the most updated version of all libraries as of 22/05/2023. Code may perform differently under different conditions.
+
+R version 4.2.3 (2023-03-15 ucrt)
+Platform: x86_64-w64-mingw32/x64 (64-bit)
+Running under: Windows 10 x64 (build 22621)
+
 ## Installation
 
 To run this project, ensure you have R installed. You can install the required packages using the following command:
